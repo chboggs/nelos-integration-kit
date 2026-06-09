@@ -1,309 +1,729 @@
-# Moira API Reference
+# Nelos External API
 
-Complete endpoint reference for the Moira backend API. All authenticated endpoints require `Authorization: Bearer <token>` (Supabase JWT or `moira_user_...` API key). All responses follow the shape `{ success: true, data: <T> }` on success and `{ success: false, message: string, errors?: [] }` on failure.
+This document is the external-facing API guide for trusted partners integrating Nelos into their own product. It focuses on the supported partner surface: API-key auth, products, managed asset batches, optional study testing, billing visibility, and webhooks.
+
+The primary integration path is:
+
+1. Create or reference a Nelos product.
+2. Submit a managed batch requesting static ads, video ads, or both.
+3. Poll the managed batch until assets are available.
+4. Optionally run a Nelos study on generated or uploaded assets.
+
+Partners should keep their own customer hierarchy, permissions, and end-customer billing in their own system. Nelos billing is org-wise and tied to the partner org.
+
+---
+
+## Base URL
+
+```text
+Production: <Nelos API base URL provided during onboarding>
+Local/dev:  http://localhost:3001
+```
+
+All examples below use:
+
+```bash
+export NELOS_API_BASE_URL="<Nelos API base URL>"
+export NELOS_API_KEY="nelos_user_xxx"
+```
 
 ---
 
 ## Authentication
 
-| Endpoint | Method | Auth Required | Description |
-|---|---|---|---|
-| `/api/users/me/api-key` | POST | Supabase JWT | Generate a user API key (returned once, store securely) |
-| `/api/users/me` | GET | Yes | Get current user profile + org summary |
-| `/api/users/me` | PUT | Yes | Update user profile (`name` only) |
+External requests use a Nelos user API key:
+
+```http
+Authorization: Bearer nelos_user_xxx
+Content-Type: application/json
+```
+
+API keys are generated in the authenticated web app by calling:
+
+```http
+POST /api/users/me/api-key
+Authorization: Bearer <supabase_access_token>
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "apiKey": "nelos_user_xxx",
+    "apiKeyPrefix": "nelos_user_x",
+    "apiKeyLastRotatedAt": "2026-06-08T18:00:00.000Z"
+  }
+}
+```
+
+The full API key is only returned once. Store it securely.
+
+---
+
+## Response Format
+
+Success:
+
+```json
+{
+  "success": true,
+  "data": {}
+}
+```
+
+Error:
+
+```json
+{
+  "success": false,
+  "message": "Validation failed",
+  "errors": []
+}
+```
+
+Use the custom `id` field returned by the API, such as `product_...`, `stimulus_...`, `study_...`, `static_gen_run_...`, `video_gen_run_...`, or `managed_batch_...`. Do not depend on MongoDB `_id` values.
+
+---
+
+## Partner Customer Mapping
+
+Nelos does not model a partner's downstream customers as first-class billing entities. Keep that layer in the partner app.
+
+For reconciliation, pass stable external IDs when creating managed batches:
+
+```json
+{
+  "externalCustomerId": "customer_123",
+  "externalWorkspaceId": "workspace_456",
+  "externalCampaignId": "campaign_789"
+}
+```
+
+Nelos stores those IDs for support, reporting, idempotency, and abuse review.
 
 ---
 
 ## Products
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/products` | GET | List all products for org |
-| `/api/products/:id` | GET | Get a single product |
-| `/api/products` | POST | Create a product |
-| `/api/products/:id` | PUT | Update a product |
-| `/api/products/:id` | DELETE | Delete a product |
-| `/api/products/categories` | GET | List valid product categories |
-| `/api/products/:id/brand-imports` | POST | Start an AI brand import from a URL |
-| `/api/products/:id/brand-imports/:importId` | GET | Poll brand import status |
-| `/api/products/:id/brand-imports/:importId/apply` | POST | Apply selected brand import suggestions to product |
+Products are org-scoped creative source records. A managed batch can use an existing `productId`, inline product data, or a `productUrl`.
 
-### Create Product — Required Fields
+### Product Object
+
+```typescript
+interface Product {
+  id: string;
+  orgId: string;
+  name: string;
+  description: string;
+  websiteUrl?: string;
+  isPinned: boolean;
+  features?: string[];
+  branding?: {
+    logo?: { url?: string; contentType?: string };
+    favicon?: { url?: string; contentType?: string };
+    ogImage?: { url?: string; contentType?: string };
+    fontFamilies?: string[];
+    colorPalette?: string[];
+    notes?: string;
+    referenceImages?: Array<{ url?: string; contentType?: string }>;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+### Create Product
+
+```http
+POST /api/products
+```
+
+```bash
+curl -X POST "$NELOS_API_BASE_URL/api/products" \
+  -H "Authorization: Bearer $NELOS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Acme Analytics",
+    "description": "Analytics software for revenue teams.",
+    "websiteUrl": "https://example.com",
+    "features": ["Pipeline reporting", "CRM sync", "Forecast alerts"]
+  }'
+```
+
+### List Products
+
+```http
+GET /api/products
+```
+
+### Get Product
+
+```http
+GET /api/products/:id
+```
+
+### Update Product
+
+```http
+PUT /api/products/:id
+```
+
+### Delete Product
+
+```http
+DELETE /api/products/:id
+```
+
+### Extract Basics From URL
+
+Use this when you want product suggestions before creating a product.
+
+```http
+POST /api/products/extract-basics
+```
+
 ```json
 {
-  "name": "string (required)",
-  "category": "ecommerce | food | travel | other (required)",
-  "description": "string (required)",
-  "websiteUrl": "https://... (optional)",
-  "features": ["string", "..."] ,
-  "branding": {
-    "logo":               { "url": "https://...", "objectName": "optional" },
-    "colorPalette":       ["#RRGGBB"],
-    "fontFamilies":       ["Inter"],
-    "referenceImages":    [{ "url": "https://..." }],
-    "typographyReference":{ "url": "https://..." },
-    "notes":              "string"
+  "sourceUrl": "https://example.com/product"
+}
+```
+
+### Import Brand Assets
+
+For an existing product, start a brand import from a product or company URL:
+
+```http
+POST /api/products/:id/brand-imports
+```
+
+```json
+{
+  "sourceUrl": "https://example.com"
+}
+```
+
+Poll:
+
+```http
+GET /api/products/:id/brand-imports/:importId
+```
+
+Apply selected suggestions:
+
+```http
+POST /api/products/:id/brand-imports/:importId/apply
+```
+
+```json
+{
+  "fields": {
+    "description": true,
+    "features": true,
+    "logo": true,
+    "colorPalette": true,
+    "referenceImages": true
   }
 }
 ```
 
-### Brand Import Flow
-1. `POST /api/products/:id/brand-imports` with `{ "sourceUrl": "https://..." }` — starts async AI extraction
-2. `GET /api/products/:id/brand-imports/:importId` — poll until `status === "completed"`; response includes `suggestions` (logoUrl, colorPalette, fontFamilies, referenceImageUrls)
-3. `POST /api/products/:id/brand-imports/:importId/apply` with selected fields to write them to the product
+---
+
+## Managed Batches
+
+Managed batches are the recommended external API for generating ads. A partner submits product context plus asset counts, and Nelos creates an asynchronous batch.
+
+Current early-access behavior:
+
+- The API creates a durable managed batch.
+- The API resolves or creates a product.
+- The API estimates credits with a 20% managed-service markup.
+- The API starts static/video planning runs.
+- Polling is the supported status path.
+- Full automatic rendering, video export, study start, and managed-batch callback delivery may be coordinated operationally during early access.
+
+### Create Managed Batch
+
+```http
+POST /api/v1/managed-batches
+Idempotency-Key: partner-job-123
+```
+
+```typescript
+interface ManagedBatchRequest {
+  productId?: string;
+  productUrl?: string;
+  product?: {
+    name?: string;
+    description?: string;
+    websiteUrl?: string;
+    features?: string[];
+    branding?: Record<string, any>;
+  };
+  requestedAssets: {
+    staticCount?: number;
+    videoCount?: number;
+    staticQuality?: 'standard' | 'premium';
+    videoMode?: 'animated' | 'ugc';
+    aspectRatios?: ('1:1' | '4:5' | '9:16' | '16:9' | '1.91:1')[];
+    videoDurationSeconds?: number;
+  };
+  runStudy?: boolean;
+  study?: {
+    pipelineType?: 'ctrProxy' | 'videoCtrProxy' | 'ama';
+    targetingPresetId?: string;
+    targetingGroups?: unknown[];
+    callbackUrl?: string;
+    callbackSecret?: string;
+  };
+  externalCustomerId?: string;
+  externalWorkspaceId?: string;
+  externalCampaignId?: string;
+  metadata?: Record<string, any>;
+  callbackUrl?: string;
+  callbackSecret?: string;
+}
+```
+
+Example with existing product:
+
+```bash
+curl -X POST "$NELOS_API_BASE_URL/api/v1/managed-batches" \
+  -H "Authorization: Bearer $NELOS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: acme-campaign-001" \
+  -d '{
+    "productId": "product_abc123",
+    "requestedAssets": {
+      "staticCount": 6,
+      "videoCount": 2,
+      "staticQuality": "premium",
+      "videoMode": "ugc",
+      "aspectRatios": ["1:1", "9:16"],
+      "videoDurationSeconds": 15
+    },
+    "runStudy": true,
+    "study": {
+      "pipelineType": "ctrProxy"
+    },
+    "externalCustomerId": "customer_123",
+    "externalCampaignId": "campaign_789",
+    "metadata": {
+      "source": "partner-dashboard"
+    }
+  }'
+```
+
+Example with product URL only:
+
+```json
+{
+  "productUrl": "https://example.com",
+  "requestedAssets": {
+    "staticCount": 4,
+    "videoCount": 1,
+    "aspectRatios": ["1:1", "9:16"]
+  },
+  "externalCustomerId": "customer_123"
+}
+```
+
+Response:
+
+```typescript
+interface ManagedBatchStatus {
+  batchId: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed' | 'canceled' | string;
+  productId: string;
+  estimatedCredits: {
+    base: number;
+    markupPercent: 20;
+    markup: number;
+    total: number;
+    breakdown: Record<string, any>;
+  };
+  requestedAssets: {
+    staticCount: number;
+    videoCount: number;
+    staticQuality?: 'standard' | 'premium';
+    videoMode?: 'animated' | 'ugc';
+    aspectRatios?: string[];
+    videoDurationSeconds?: number;
+  };
+  externalCustomerId?: string | null;
+  externalWorkspaceId?: string | null;
+  externalCampaignId?: string | null;
+  staticGenerationRunIds: string[];
+  videoGenerationRunIds: string[];
+  studyIds: string[];
+  assets: Array<{
+    stimulusId: string;
+    type: 'image_ad' | 'static_image' | 'video_ad';
+    mediaUrl: string;
+    headline?: string;
+    primaryText?: string;
+    metadata?: Record<string, any>;
+    generation?: Record<string, any>;
+    createdAt?: string;
+  }>;
+  progress: {
+    requestedCount: number;
+    completedCount: number;
+    failedCount: number;
+    remainingCount: number;
+  };
+  error?: {
+    message: string;
+    code?: string;
+    at?: string;
+  };
+  metadata?: Record<string, any> | null;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+### Get Managed Batch
+
+```http
+GET /api/v1/managed-batches/:batchId
+```
+
+```bash
+curl "$NELOS_API_BASE_URL/api/v1/managed-batches/managed_batch_abc123" \
+  -H "Authorization: Bearer $NELOS_API_KEY"
+```
+
+### List Managed Batches
+
+```http
+GET /api/v1/managed-batches?productId=product_abc123&limit=25
+```
+
+Query params:
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `productId` | string | Optional product filter |
+| `limit` | number | 1-100, default 25 |
+
+### Idempotency
+
+Send `Idempotency-Key` on create requests. If the same key is retried for the same org, Nelos returns the existing batch instead of creating a duplicate.
 
 ---
 
-## Ad Generation
+## Direct Static Generation
 
-All endpoints require org auth. Currently only image generation is supported.
+Most partners should use managed batches. Direct static generation is available for trusted integrations that need concept-level control.
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/generate/ads/plan` | POST | Generate AI concept plans (copy + visual direction) |
-| `/api/generate/ads/render` | POST | Render ads from concepts; **auto-creates Stimulus records** |
-| `/api/generate/static-ad/copy-plan` | POST | Generate static ad copy plans only (no image render) |
-| `/api/generate/product-branding` | POST | Generate product branding images using brand kit |
+### Create Static Planning Run
 
-### `POST /api/generate/ads/plan`
+```http
+POST /api/generations/static
+```
+
 ```json
 {
-  "productId": "product_xxx (required unless stimulusIds provided)",
-  "stimulusIds": ["stimulus_xxx"],
+  "productId": "product_abc123",
   "useBrandKit": true,
-  "numOptions": 3,
-  "customPrompt": "Focus on durability.",
-  "theme": { "name": "...", "description": "..." },
-  "themes": [{ "name": "...", "description": "..." }]
+  "numOptions": 6,
+  "copyVerbosity": "medium"
 }
 ```
-Returns: `{ conceptPlans: [{ name, headline, primaryText, reasoning: { strategy, visualDirection } }], ... }`
 
-### `POST /api/generate/ads/render`
+Notes:
+
+- Provide `productId` or `stimulusIds`.
+- Product-only generation requires `useBrandKit: true`.
+- This endpoint plans concepts. It does not render images.
+- Poll until `status` is `awaiting_selection`.
+
+### Render Selected Static Concepts
+
+```http
+POST /api/generations/static/:id/render
+```
+
 ```json
 {
-  "productId": "product_xxx",
-  "stimulusIds": ["stimulus_xxx"],
-  "useBrandKit": true,
-  "concepts": [{ "name": "...", "headline": "...", "primaryText": "...", "reasoning": {} }],
-  "aspectRatio": "1:1",
+  "conceptIds": ["concept_1", "concept_2"],
   "aspectRatios": ["1:1", "9:16"],
-  "customPrompt": "optional"
+  "quality": "standard",
+  "visualExecutionsPerCombo": 1
 }
 ```
-Valid aspect ratios: `1:1` | `9:16` | `4:5` | `16:9` | `1.91:1`
 
-Returns: `{ stimuli: [Stimulus], failedConcepts: [...], generatedCount, requestedCount }`
+Rendering debits credits immediately. Completed render jobs create `Stimulus` records with `mediaUrl`, copy, and generation metadata.
 
-**Note:** Stimuli are created automatically. Pass their `id` values directly into a study.
+### Static Generation Routes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/generations/static` | List static runs |
+| `POST` | `/api/generations/static` | Create concept planning run |
+| `GET` | `/api/generations/static/:id` | Fetch status, concepts, jobs, and generated stimuli |
+| `GET` | `/api/generations/static/:id/events` | Stream progress with SSE |
+| `PATCH` | `/api/generations/static/:id/concepts/:conceptId` | Edit a concept before render |
+| `POST` | `/api/generations/static/:id/render` | Render selected concepts |
 
 ---
 
-## Stimuli
+## Direct Video Generation
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/stimuli` | GET | List stimuli (filter by `studyId`, `type`) |
-| `/api/stimuli/:id` | GET | Get a single stimulus |
-| `/api/stimuli` | POST | Create a stimulus |
-| `/api/stimuli/:id` | PUT | Update a stimulus (`type` is immutable) |
-| `/api/stimuli/:id` | DELETE | Delete a stimulus (removes from all studies) |
+Video generation exposes more workflow detail than managed batches. External partners should use it only when they need direct control over script, storyboard, frames, clips, voiceover, and export.
 
-### Stimulus Types and Pipeline Mapping
-| Stimulus Type | Pipeline Type |
-|---|---|
-| `image_ad`, `static_image` | `ctrProxy` |
-| `video_ad` | `videoCtrProxy` |
-| `tiktok_hook`, `text_hook` | `textHook` |
-| `feature_concept`, `product_copy`, `email`, `social_post` | (no pipeline, use for copy testing) |
+### Options
 
-**Do not mix image, video, and text hook stimuli in the same study.**
+```http
+GET /api/generations/video/options
+```
 
-### Create Stimulus
+Returns supported content intents, video modes, image providers, audio modes, voiceover options, style presets, visibility/render modes, and billing options.
+
+### Create Video Run
+
+```http
+POST /api/generations/video
+```
+
 ```json
 {
-  "name": "string (required)",
-  "type": "image_ad | static_image | video_ad | tiktok_hook | text_hook | feature_concept | product_copy | email | social_post (required)",
-  "mediaUrl": "https://... (for image_ad, static_image, video_ad)",
-  "primaryText": "string",
-  "headline": "string",
-  "description": "string",
-  "script": "string (for video_ad_script)",
-  "productId": "product_xxx",
-  "metadata": {}
+  "productId": "product_abc123",
+  "aspectRatio": "9:16",
+  "durationSeconds": 15,
+  "videoMode": "ugc",
+  "creativeBrief": "Show a revenue leader discovering pipeline risk before a forecast call.",
+  "queuePlanning": true
 }
 ```
 
+### Video Routes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/generations/video/options` | Get supported options |
+| `GET` | `/api/generations/video` | List video runs |
+| `POST` | `/api/generations/video` | Create a direct run |
+| `GET` | `/api/generations/video/:id` | Fetch run |
+| `DELETE` | `/api/generations/video/:id` | Cancel/delete run |
+| `GET` | `/api/generations/video/:id/events` | Stream progress with SSE |
+| `PATCH` | `/api/generations/video/:id/planning` | Update planning |
+| `POST` | `/api/generations/video/:id/script/generate` | Generate script |
+| `PATCH` | `/api/generations/video/:id/script` | Update script |
+| `POST` | `/api/generations/video/:id/storyboard/generate` | Generate storyboard |
+| `POST` | `/api/generations/video/:id/voiceover/generate` | Generate voiceover |
+| `POST` | `/api/generations/video/:id/assets` | Queue remaining assets |
+| `POST` | `/api/generations/video/:id/export` | Export final video and create a video stimulus |
+
+Plan-based video generation is also available:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/generations/video/plans` | List content plans |
+| `POST` | `/api/generations/video/plans` | Create content plan |
+| `GET` | `/api/generations/video/plans/:planId` | Fetch plan |
+| `PATCH` | `/api/generations/video/plans/:planId` | Update plan |
+| `POST` | `/api/generations/video/plans/:planId/runs` | Create run from plan concept |
+
+Completed exports create `video_ad` stimuli. Use those stimuli in `videoCtrProxy` studies.
+
 ---
 
-## Studies
+## Studies and Uploaded Assets
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/studies` | GET | List studies (filter by `status`, `objective`, `type`) |
-| `/api/studies/:id` | GET | Get a single study (populated) |
-| `/api/studies` | POST | Create a study |
-| `/api/studies/:id` | PUT | Update a study |
-| `/api/studies/:id` | DELETE | Delete a study and all samplings |
-| `/api/studies/:id/stimuli` | POST | Add stimuli to a study |
-| `/api/studies/:id/stimuli/:stimulusId` | DELETE | Remove a stimulus from a study |
-| `/api/studies/:id/sampling/confirm` | GET | Get sampling cost summary |
-| `/api/studies/:id/sampling/start` | POST | Start sampling |
-| `/api/studies/:id/sampling/targeted` | POST | Run targeted sampling with demographic filters |
-| `/api/studies/:id/sampling/status` | GET | Poll sampling progress |
-| `/api/studies/:id/sampling/events` | GET | SSE stream of live progress events |
-| `/api/studies/:id/results/ranking` | GET | Ranking results (after sampling) |
-| `/api/studies/:id/results/themes` | GET | Theme/cluster results (after clustering) |
-| `/api/studies/:id/results/demos` | GET | Demographic insights (after clustering) |
-| `/api/studies/:id/results/segments` | GET | Behavioral segments (after segmentation) |
-| `/api/studies/:id/results/geo` | GET | Geo results (after sampling) |
-| `/api/studies/:id/chat/messages` | POST | Post a chat message about the study |
-| `/api/studies/:id/chat/messages` | GET | Get chat history (requires `sessionId` query param) |
-| `/api/studies/public/:id` | GET | Public study metadata (no auth) |
-| `/api/studies/public/:id/results/*` | GET | Public result endpoints (no auth) |
+Partners can run studies on uploaded assets, generated static ads, or generated videos.
+
+### Stimulus
+
+```typescript
+interface Stimulus {
+  id: string;
+  orgId: string;
+  productId?: string;
+  name: string;
+  type: 'image_ad' | 'static_image' | 'video_ad' | 'video_ad_script' | 'tiktok_hook';
+  primaryText?: string;
+  headline?: string;
+  description?: string;
+  mediaUrl?: string;
+  script?: string;
+  metadata?: Record<string, any>;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+### Create Stimulus From Hosted Asset
+
+```http
+POST /api/stimuli
+```
+
+```json
+{
+  "productId": "product_abc123",
+  "name": "Partner Static Ad A",
+  "type": "image_ad",
+  "mediaUrl": "https://cdn.example.com/ad-a.png",
+  "headline": "Forecast with confidence",
+  "primaryText": "Spot pipeline risk before it hits the board deck."
+}
+```
+
+### Signed Upload
+
+```http
+POST /api/uploads/sign
+```
+
+```json
+{
+  "fileName": "ad-a.png",
+  "contentType": "image/png"
+}
+```
+
+Response includes `uploadUrl`, `publicUrl`, `objectName`, and `expiresAt`. Upload the file to `uploadUrl`, then create a stimulus using `publicUrl`.
 
 ### Create Study
-```json
-{
-  "productId": "product_xxx (required)",
-  "name": "string (optional, auto-generated if omitted)",
-  "objective": "ad_interest | purchase_intent | concept_fit | ad_evaluation (optional)",
-  "stimulusIds": ["stimulus_xxx"],
-  "pipelineType": "ctrProxy | videoCtrProxy | textHook (optional, inferred from stimuli)",
-  "runsPerPersonaPerStimulus": 5,
-  "personaSample": { "enabled": true, "size": 300 },
-  "callbackUrl": "https://... (optional webhook on completion)",
-  "callbackSecret": "string (optional HMAC secret)",
-  "nonUsMarket": "India (optional, omit for US)",
-  "eligibilityNotes": ["Must be a homeowner"]
-}
+
+```http
+POST /api/studies
 ```
 
-### Sampling Status Payload
 ```json
 {
-  "studyId": "study_xxx",
-  "status": "draft | running | completed | failed",
-  "currentStep": "sampling | clustering | segmentation | archetypes | null",
-  "progressPercent": 0,
-  "elapsedSeconds": 0,
-  "currentStepElapsedSeconds": 0,
-  "failure": { "step": "...", "error": "...", "failedAt": "..." }
-}
-```
-
-### Targeted Sampling
-```json
-{
-  "ageMin": 25,
-  "ageMax": 45,
-  "sexes": ["male", "female", "non-binary", "other"],
+  "productId": "product_abc123",
+  "name": "Campaign Test",
+  "pipelineType": "ctrProxy",
+  "stimulusIds": ["stimulus_abc123", "stimulus_def456"],
   "runsPerPersonaPerStimulus": 3,
-  "groups": [
-    { "label": "Young Adults", "weight": 60, "ageMin": 18, "ageMax": 30, "sexes": ["male"] },
-    { "label": "Middle Age",   "weight": 40, "ageMin": 31, "ageMax": 50, "sexes": ["female"] }
-  ]
+  "callbackUrl": "https://partner.example.com/nelos/study-webhook",
+  "callbackSecret": "shared-secret"
 }
 ```
 
----
+Pipeline guidance:
 
-## Personas
+| Asset type | `pipelineType` |
+|------------|----------------|
+| Static/image ads | `ctrProxy` |
+| Video ads | `videoCtrProxy` |
+| Open-ended AMA-style feedback | `ama` |
+| Text hooks | `textHook` |
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/personas` | GET | List personas (filter by `sex`, `location`, `tags`) |
-| `/api/personas/:id` | GET | Get a single persona |
-| `/api/personas` | POST | Create a persona |
-| `/api/personas/:id` | PUT | Update a persona |
-| `/api/personas/:id` | DELETE | Delete a persona |
+### Start Sampling
 
-### Create Persona
+Get confirmation:
+
+```http
+GET /api/studies/:id/sampling/confirm
+```
+
+Start:
+
+```http
+POST /api/studies/:id/sampling/start
+```
+
 ```json
 {
-  "age": 32,
-  "sex": "male | female | non-binary | other",
-  "location": "New York, NY",
-  "occupation": "Software Engineer",
-  "label": "Tech Early Adopter",
-  "extraNotes": "Loves gadgets.",
-  "tags": ["tech", "urban"],
-  "promptProfile": "age_sex | age_sex_location | age_sex_location_occupation"
+  "confirm": {
+    "stimulusCount": 2,
+    "runsPerPair": 3
+  }
 }
 ```
 
----
+### Study Status and Results
 
-## Persona Groups
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/persona-groups` | GET | List all persona groups |
-| `/api/persona-groups/:id` | GET | Get a single group |
-| `/api/persona-groups/:id/personas` | GET | Get group with full persona objects |
-| `/api/persona-groups` | POST | Create a group |
-| `/api/persona-groups/from-study/:studyId` | POST | Create group from a study's personas |
-| `/api/persona-groups/sample` | POST | Create group by random sampling |
-| `/api/persona-groups/:id` | PUT | Update a group |
-| `/api/persona-groups/:id` | DELETE | Delete a group |
-| `/api/persona-groups/:id/personas` | POST | Add personas to group |
-| `/api/persona-groups/:id/personas` | DELETE | Remove personas from group |
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/studies/:id/sampling/status` | Poll progress |
+| `GET` | `/api/studies/:id/sampling/events` | Stream progress with SSE |
+| `GET` | `/api/studies/:id/results/ranking` | Get ranked stimuli |
+| `GET` | `/api/studies/:id/results/themes` | Get reason themes |
+| `GET` | `/api/studies/:id/results/demos` | Get demographic insights |
+| `GET` | `/api/studies/:id/results/geo` | Get geographic insights |
+| `GET` | `/api/studies/:id/results/segments` | Get behavioral segments |
 
 ---
 
-## Uploads
+## Webhooks
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/uploads/sign` | POST | Get a signed upload URL |
-| `/api/uploads/local/:objectName` | PUT | Upload to local filesystem (dev only) |
+Study completion webhooks are supported for studies created with `callbackUrl`.
 
-### Signed Upload Flow
-```json
-// POST /api/uploads/sign
-{ "fileName": "ad-a.png", "contentType": "image/png" }
+Managed batches accept `callbackUrl` and `callbackSecret` in the request body, but managed-batch callback delivery is not the supported completion path during early access. Poll `GET /api/v1/managed-batches/:batchId`.
 
-// Response
-{
-  "uploadUrl": "https://storage.googleapis.com/...",
-  "publicUrl": "https://storage.googleapis.com/...",
-  "objectName": "uploads/...",
-  "expiresAt": "2026-..."
-}
+### Study Completion Webhook
+
+When a study completes, Nelos sends a signed JSON payload to the configured `callbackUrl`.
+
+Headers:
+
+```http
+Content-Type: application/json
+X-Nelos-Signature: <hmac-sha256>
 ```
-Then `PUT` the file binary to `uploadUrl` with `Content-Type` header. Use `publicUrl` as `mediaUrl` in stimuli or product branding.
+
+Payload includes study identifiers, status, and backward-compatible aliases for existing webhook consumers.
+
+Verify the signature with the shared `callbackSecret`.
 
 ---
 
 ## Billing
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/billing/subscription` | GET | Current subscription + `creditsRemaining` |
-| `/api/billing/transactions` | GET | Paginated credit ledger |
-| `/api/billing/checkout` | POST | Stripe checkout session for `starter` or `pro` plan |
-| `/api/billing/addon` | POST | Stripe add-on checkout session |
-| `/api/billing/portal` | POST | Stripe billing portal session |
+Billing is org-wise and managed in the Nelos web portal. Partners should bill their own downstream customers separately.
 
-**Notes:**
-- `scale` plan is sales-managed and not available via self-serve checkout.
-- Billing errors at study start: `402` with `code: "INSUFFICIENT_CREDITS"` or `code: "SUBSCRIPTION_BLOCKED"`.
+### Billing Routes
 
----
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/billing/subscription` | Current org subscription and credits |
+| `GET` | `/api/billing/transactions?page=1&limit=25` | Org credit transactions |
+| `POST` | `/api/billing/checkout` | Create Stripe checkout session for `starter` or `pro` |
+| `POST` | `/api/billing/addon` | Buy add-on credits |
+| `POST` | `/api/billing/portal` | Open Stripe billing portal |
 
-## Orgs
+Self-serve checkout supports `starter` and `pro`. `scale` is sales-managed.
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/orgs` | POST | Create an org (user must not already belong to one) |
-| `/api/orgs/:id` | GET | Get org details |
-| `/api/orgs/:id` | PUT | Update org name |
-| `/api/orgs/:id/members` | GET | List org members |
+Credit behavior:
+
+- Study runs debit credits at sampling start.
+- Static/video generation debits requested assets and refunds failed asset generations where supported.
+- Insufficient balance returns `402`.
+- Blocked subscription statuses return `402`.
 
 ---
 
-## Health
+## Status Codes
 
-| Endpoint | Method | Auth | Description |
-|---|---|---|---|
-| `/health` | GET | None | Returns `{ status: "ok", timestamp, uptime, environment }` |
+| Status | Meaning |
+|--------|---------|
+| `200` | Success |
+| `201` | Created |
+| `202` | Accepted for async processing |
+| `400` | Validation or request error |
+| `401` | Missing or invalid auth |
+| `403` | Authenticated but not allowed for that org/resource |
+| `404` | Resource not found |
+| `402` | Billing issue or insufficient credits |
+| `500` | Server error |
+
+---
+
+## Recommended External Integration
+
+For most partners:
+
+1. Generate one `nelos_user_...` API key for the partner org.
+2. Store partner customer/product mappings in the partner app.
+3. Create or reuse Nelos products per advertised product.
+4. Submit managed batches with `externalCustomerId`, `externalWorkspaceId`, and `externalCampaignId`.
+5. Use `Idempotency-Key` on every batch create request.
+6. Poll `GET /api/v1/managed-batches/:batchId`.
+7. Store returned `stimulusId` and `mediaUrl` values in the partner app.
+8. Use Nelos study endpoints only when the partner wants testing/insights, not just asset generation.

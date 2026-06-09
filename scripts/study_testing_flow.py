@@ -1,5 +1,5 @@
 """
-Moira API - Study Testing Flow
+Nelos API - Study Testing Flow
 ================================
 Runs the full end-to-end study testing workflow:
   1. Create stimuli (or accept existing stimulus IDs)
@@ -10,17 +10,17 @@ Runs the full end-to-end study testing workflow:
   6. Fetch and print results
 
 Usage:
-    python study_testing_flow.py
+    python scripts/study_testing_flow.py
 
-Set MOIRA_API_KEY and MOIRA_BASE_URL as environment variables before running.
+Set NELOS_API_KEY and NELOS_API_BASE_URL as environment variables before running.
 """
 
 import os
 import time
 import requests
 
-API_KEY = os.environ.get("MOIRA_API_KEY", "moira_user_...")
-BASE_URL = os.environ.get("MOIRA_BASE_URL", "https://<your-host>")
+API_KEY = os.environ.get("NELOS_API_KEY", "nelos_user_xxx")
+BASE_URL = os.environ.get("NELOS_API_BASE_URL", "https://<nelos-api-host>")
 
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
@@ -40,9 +40,8 @@ def api_get(path: str) -> dict:
     return resp.json()["data"]
 
 
-# ─────────────────────────────────────────────
-# STEP 1: Create Stimuli (skip if you already have IDs from ad generation)
-# ─────────────────────────────────────────────
+# STEP 1: Create Stimuli
+# Skip if you already have IDs from a managed batch or direct generation.
 def create_stimulus(
     name: str,
     stimulus_type: str,
@@ -57,11 +56,12 @@ def create_stimulus(
       feature_concept | product_copy | email | social_post
 
     Pipeline type is inferred from stimulus type:
-      image_ad / static_image  → ctrProxy
-      video_ad                 → videoCtrProxy
-      tiktok_hook / text_hook  → textHook
+      image_ad / static_image  -> ctrProxy
+      video_ad                 -> videoCtrProxy
+      tiktok_hook / text_hook  -> textHook
+      AMA-style feedback       -> ama
 
-    NOTE: Do NOT mix image, video, and text hook stimuli in the same study.
+    NOTE: Do not mix image, video, AMA, and text hook stimuli in one study.
     """
     body = {"name": name, "type": stimulus_type}
     if media_url:
@@ -74,13 +74,11 @@ def create_stimulus(
         body["productId"] = product_id
 
     stimulus = api_post("/api/stimuli", body)
-    print(f"[1] Stimulus created: {stimulus['id']} — {stimulus['name']}")
+    print(f"[1] Stimulus created: {stimulus['id']} - {stimulus['name']}")
     return stimulus
 
 
-# ─────────────────────────────────────────────
 # STEP 2: Create a Study
-# ─────────────────────────────────────────────
 def create_study(
     product_id: str,
     stimulus_ids: list,
@@ -113,26 +111,33 @@ def create_study(
         body["nonUsMarket"] = non_us_market
 
     study = api_post("/api/studies", body)
-    print(f"[2] Study created: {study['id']} — {study.get('name', 'unnamed')}")
+    print(f"[2] Study created: {study['id']} - {study.get('name', 'unnamed')}")
     return study
 
 
-# ─────────────────────────────────────────────
 # STEP 3: Get Sampling Confirmation
-# ─────────────────────────────────────────────
 def get_sampling_confirmation(study_id: str) -> dict:
     confirmation = api_get(f"/api/studies/{study_id}/sampling/confirm")
-    print(
-        f"[3] Confirmation: {confirmation['personaCount']} personas × "
-        f"{confirmation['stimulusCount']} stimuli = "
-        f"{confirmation['totalRequests']} total requests"
-    )
+    persona_count = confirmation.get("personaCount")
+    stimulus_count = confirmation.get("stimulusCount")
+    total_requests = confirmation.get("totalRequests")
+    runs_per_pair = confirmation.get("runsPerPair")
+
+    details = []
+    if persona_count is not None:
+        details.append(f"{persona_count} personas")
+    if stimulus_count is not None:
+        details.append(f"{stimulus_count} stimuli")
+    if runs_per_pair is not None:
+        details.append(f"{runs_per_pair} runs per pair")
+    if total_requests is not None:
+        details.append(f"{total_requests} total requests")
+
+    print(f"[3] Confirmation: {', '.join(details) if details else confirmation}")
     return confirmation
 
 
-# ─────────────────────────────────────────────
 # STEP 4: Start Sampling
-# ─────────────────────────────────────────────
 def start_sampling(study_id: str, confirmation: dict) -> dict:
     result = api_post(
         f"/api/studies/{study_id}/sampling/start",
@@ -142,9 +147,7 @@ def start_sampling(study_id: str, confirmation: dict) -> dict:
     return result
 
 
-# ─────────────────────────────────────────────
 # STEP 5: Poll for Completion
-# ─────────────────────────────────────────────
 def poll_until_complete(study_id: str, poll_interval: int = 10) -> dict:
     """
     Polls the sampling status every `poll_interval` seconds until the study
@@ -153,7 +156,7 @@ def poll_until_complete(study_id: str, poll_interval: int = 10) -> dict:
     Status payload fields:
       status:                    draft | running | completed | failed
       currentStep:               sampling | clustering | segmentation | archetypes
-      progressPercent:           0–100
+      progressPercent:           0-100
       elapsedSeconds:            total pipeline runtime
       currentStepElapsedSeconds: runtime for the active stage
     """
@@ -161,12 +164,12 @@ def poll_until_complete(study_id: str, poll_interval: int = 10) -> dict:
     while True:
         status = api_get(f"/api/studies/{study_id}/sampling/status")
         pct = status.get("progressPercent", 0)
-        step = status.get("currentStep", "—")
+        step = status.get("currentStep", "-")
         elapsed = status.get("elapsedSeconds", 0)
         print(f"    {status['status'].upper():12} | {pct:3}% | step: {step} | {elapsed:.0f}s elapsed")
 
         if status["status"] == "completed":
-            print("    ✅ Study completed.")
+            print("    Study completed.")
             return status
         elif status["status"] == "failed":
             failure = status.get("failure", {})
@@ -177,16 +180,14 @@ def poll_until_complete(study_id: str, poll_interval: int = 10) -> dict:
         time.sleep(poll_interval)
 
 
-# ─────────────────────────────────────────────
 # STEP 6: Fetch Results
-# ─────────────────────────────────────────────
 def fetch_results(study_id: str) -> dict:
     """
     Results are step-gated:
-      ranking  → available after sampling
-      themes   → available after clustering
-      demos    → available after clustering
-      segments → available after segmentation
+      ranking  -> available after sampling
+      themes   -> available after clustering
+      demos    -> available after clustering
+      segments -> available after segmentation
 
     Use ?refresh=true to bypass cache and recompute.
     """
@@ -198,13 +199,11 @@ def fetch_results(study_id: str) -> dict:
     return ranking
 
 
-# ─────────────────────────────────────────────
 # Main: run the full flow
-# ─────────────────────────────────────────────
 if __name__ == "__main__":
     PRODUCT_ID = "product_123"  # Replace with a real product ID
 
-    # Option A: Use stimulus IDs already created by the ad generation flow
+    # Option A: Use stimulus IDs already created by managed batch generation
     EXISTING_STIMULUS_IDS = []  # e.g. ["stimulus_abc", "stimulus_def"]
 
     # Option B: Create stimuli from hosted URLs

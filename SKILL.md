@@ -1,161 +1,221 @@
 ---
-name: moira-api-integration
-description: Complete guide to integrating with the Moira backend API. Use this skill when a user wants to build a client application, automate study creation, run ad generation, upload stimuli, poll for sampling results, or implement any programmatic interaction with Moira's core features.
+name: nelos-api-integration
+description: Complete guide to integrating with the Nelos External API. Use this skill when a user wants to build a partner integration, create managed asset batches, poll generated ads, run optional study testing, upload stimuli, inspect billing, or implement API-key authentication.
 ---
 
-# Moira API Integration Guide
+# Nelos API Integration Guide
 
 ## Purpose
 
-This skill provides comprehensive instructions for integrating client applications or external scripts with the Moira backend API. It covers authentication, multi-step workflows (Ad Generation and Study Testing), core entity management, sampling execution, and results retrieval.
+This skill provides instructions for integrating partner applications or external scripts with the Nelos External API. It covers API-key authentication, product setup, managed asset batches, optional direct static/video generation, study testing, uploads, webhooks, and billing visibility.
 
 Use this skill when:
-- A user asks how to integrate Moira into their own app via API
-- You need to build a script that automates Moira study creation or ad generation
-- You need to understand the required sequence of API calls for complex flows
-- You are implementing the API-key authentication flow
+
+- A user asks how to integrate Nelos into their own app via API
+- You need to automate static or video ad generation through managed batches
+- You need to run study testing against generated or uploaded assets
+- You are implementing the Nelos API-key authentication flow
+- You need exact external endpoint names, schemas, or status semantics
 
 ## Bundled Resources
 
 | Resource | Description |
 |---|---|
-| `scripts/ad_generation_flow.py` | Runnable Python script for the full ad generation workflow (product → concepts → rendered ads) |
-| `scripts/study_testing_flow.py` | Runnable Python script for the full study testing workflow (stimuli → study → sampling → results) |
-| `templates/moira-client.ts` | Drop-in TypeScript client class covering all major API surfaces |
-| `references/api_reference.md` | Full endpoint reference with request/response schemas for every route |
+| `templates/nelos-client.ts` | Drop-in TypeScript client class covering the partner API surface |
+| `scripts/managed_batch_flow.py` | Runnable Python script for product-backed managed batch generation and polling |
+| `scripts/study_testing_flow.py` | Runnable Python script for stimuli, studies, sampling, and results |
+| `references/api_reference.md` | Full external API reference with request/response schemas |
 
 When a user needs a working integration, start with the TypeScript template or Python scripts. Load `references/api_reference.md` when you need exact field names, enums, or schema details.
 
 ## Core Concepts & Constraints
 
-**Can a customer put "basically the entire app" into their own client via API?**
-**Yes.** The Moira backend exposes almost all of its functionality via REST API.
+**Recommended external path:** use managed batches.
 
-**Important Constraints — these will break integrations if missed:**
+```
+Create or reference Product -> Submit Managed Batch -> Poll Batch -> Store returned assets
+```
 
-- **Org Membership**: Users must belong to an Organization (`orgId`) to use most authenticated routes. Ensure the user is set up with an org before any other API calls.
-- **Pipeline Types**: Studies must use a `pipelineType` that matches the stimuli they test.
-  - `ctrProxy` → images (`image_ad`, `static_image`)
-  - `videoCtrProxy` → videos (`video_ad`)
-  - `textHook` → text (`tiktok_hook`, `text_hook`)
-  - The backend will infer this from stimuli if omitted, but will reject mismatches.
-- **Mixed Media**: You **cannot** mix image, video, and text hook stimuli in the same study.
-- **Video Readiness Gate**: Video studies cannot start sampling until all video stimuli have `stimulusReadiness.videoCtrProxy.status = "ready"` (async processing after upload).
-- **Billing Enforcement**: Starting a study without sufficient credits returns `402 Payment Required` with `code: "INSUFFICIENT_CREDITS"` or `code: "SUBSCRIPTION_BLOCKED"`.
-- **Render auto-creates Stimuli**: `POST /api/generate/ads/render` creates Stimulus records automatically. Do not call `POST /api/stimuli` again for the same images.
+Important constraints:
+
+- **Org membership:** API keys are tied to a Nelos user in an org. Most authenticated routes require org membership.
+- **Partner customer mapping:** Nelos billing is org-wise. Keep downstream customers, permissions, and end-customer billing in the partner app.
+- **External reconciliation:** Pass stable `externalCustomerId`, `externalWorkspaceId`, and `externalCampaignId` values when creating managed batches.
+- **Idempotency:** Send `Idempotency-Key` on managed batch creates. Retrying the same key for the same org returns the existing batch.
+- **Early-access managed batches:** Polling is the supported status path. Callback delivery for managed batches may be coordinated operationally during early access.
+- **Managed-service rate:** Managed batch credit estimates include the current 20% managed-service markup.
+- **Pipeline types:** Use `ctrProxy` for static/image ads, `videoCtrProxy` for video ads, `ama` for open-ended AMA feedback, and `textHook` for text hooks.
+- **Mixed media:** Do not mix image, video, AMA, and text-hook stimuli in the same study.
+- **Billing enforcement:** Insufficient credits or blocked subscription status returns `402`.
 
 ## Authentication
 
-Two methods are supported:
+External requests use a Nelos API key:
 
-1. **Supabase JWT** (primary): `Authorization: Bearer <supabase_access_token>`
-2. **API Key** (for external integrations): `Authorization: Bearer moira_user_...`
-
-For external customers, treat API access as a UI prerequisite:
-
-1. Make sure the user is in an org.
-2. Have them sign in to the Moira UI.
-3. Open `Settings`.
-4. Generate an API key.
-5. Store it securely, because the plaintext value is only shown once.
-
-After that, the integration flow in this skill starts from authenticated API usage, not org/bootstrap setup.
-
-## Workflow 1: Ad Generation Flow
-
-This is the primary creation workflow. It produces rendered ad images that are automatically saved as Stimuli.
-
-```
-Create Product  →  Generate Concept Plans  →  Render Ads  →  [Stimuli created automatically]
+```http
+Authorization: Bearer nelos_user_xxx
+Content-Type: application/json
 ```
 
-**Step 1: Create a Product** — `POST /api/products`
+Recommended environment variables:
 
-Required: `name`, `category`, `description`. Include `branding` (logo, colorPalette, fontFamilies) for best AI generation quality.
-
-**Step 2: Generate Concept Plans** — `POST /api/generate/ads/plan`
-
-Required: `productId` (or `stimulusIds`). Set `useBrandKit: true` to use the product's branding assets. Returns an array of `conceptPlans` with `name`, `headline`, `primaryText`, and `reasoning`.
-
-**Step 3: Render Ads** — `POST /api/generate/ads/render`
-
-Pass the `concepts` array from Step 2. Set `aspectRatios` (e.g. `["1:1"]`). Returns `stimuli` — an array of fully created Stimulus records with `id` values ready to use in a study. Also returns `failedConcepts` — always check this array.
-
-See `scripts/ad_generation_flow.py` for a complete runnable example.
-
-## Workflow 2: Study Testing Flow
-
-Takes existing stimuli (from Workflow 1 or manually created) and runs them through AI persona sampling.
-
-```
-Stimuli  →  Create Study  →  Confirm  →  Start Sampling  →  Poll Status  →  Fetch Results
+```bash
+export NELOS_API_BASE_URL="<Nelos API base URL>"
+export NELOS_API_KEY="nelos_user_xxx"
 ```
 
-**Step 1: Ensure Stimuli Exist**
+Generate API keys in the authenticated web app with:
 
-Either use IDs from Workflow 1, or create stimuli manually via `POST /api/stimuli` with a hosted `mediaUrl`.
+```http
+POST /api/users/me/api-key
+Authorization: Bearer <supabase_access_token>
+```
 
-**Step 2: Create a Study** — `POST /api/studies`
+The full API key is only returned once. Store it securely.
 
-Required: `productId`, `stimulusIds`. Optional but recommended: `personaSample: { enabled: true, size: 300 }`, `runsPerPersonaPerStimulus: 5`. Add `callbackUrl` for a webhook on completion.
+## Workflow 1: Managed Batch Generation
 
-**Step 3: Get Confirmation** — `GET /api/studies/:id/sampling/confirm`
+Create or reuse a product, then submit a managed batch:
 
-Returns `{ personaCount, stimulusCount, totalRequests }`. This is the cost preview.
+```http
+POST /api/v1/managed-batches
+Idempotency-Key: partner-job-123
+```
 
-**Step 4: Start Sampling** — `POST /api/studies/:id/sampling/start`
+Minimum request:
 
-Pass the exact confirmation object back in `{ confirm: { personaCount, stimulusCount, totalRequests } }`.
-
-**Step 5: Poll Status** — `GET /api/studies/:id/sampling/status`
-
-Poll every 10 seconds. Check `status` (`running` / `completed` / `failed`) and `progressPercent`. For live updates, connect to the SSE endpoint at `GET /api/studies/:id/sampling/events`.
-
-**Step 6: Fetch Results** — Results are step-gated:
-
-| Endpoint | Available After |
-|---|---|
-| `/results/ranking` | sampling |
-| `/results/geo` | sampling |
-| `/results/themes` | clustering |
-| `/results/demos` | clustering |
-| `/results/segments` | segmentation |
-
-See `scripts/study_testing_flow.py` for a complete runnable example.
-
-## File Uploads
-
-If you need to upload files rather than provide hosted URLs:
-1. `POST /api/uploads/sign` with `{ fileName, contentType }` → get `uploadUrl` and `publicUrl`
-2. `PUT` the file binary directly to `uploadUrl`
-3. Use `publicUrl` as `mediaUrl` when creating a Stimulus or product branding asset
-
-The TypeScript template (`templates/moira-client.ts`) includes a `uploads.uploadFile()` helper that handles both steps.
-
-## Webhooks
-
-Add `callbackUrl` and `callbackSecret` to a study on creation. Moira will POST to that URL when the study completes:
 ```json
 {
-  "event": "study.completed",
-  "occurredAt": "2026-...",
-  "data": { "studyId": "study_xxx", "orgId": "org_xxx", "status": "completed" }
+  "productId": "product_abc123",
+  "requestedAssets": {
+    "staticCount": 4,
+    "videoCount": 1,
+    "aspectRatios": ["1:1", "9:16"]
+  },
+  "externalCustomerId": "customer_123"
 }
 ```
 
-## Full Endpoint List
+Poll:
+
+```http
+GET /api/v1/managed-batches/:batchId
+```
+
+Completed batches return generated assets with `stimulusId`, `type`, `mediaUrl`, copy, and generation metadata.
+
+See `scripts/managed_batch_flow.py` for a runnable example.
+
+## Workflow 2: Study Testing
+
+Use generated batch assets or uploaded/hosted assets as stimuli:
+
+```
+Stimuli -> Create Study -> Confirm -> Start Sampling -> Poll Status -> Fetch Results
+```
+
+Key routes:
+
+- `POST /api/stimuli`
+- `POST /api/studies`
+- `GET /api/studies/:id/sampling/confirm`
+- `POST /api/studies/:id/sampling/start`
+- `GET /api/studies/:id/sampling/status`
+- `GET /api/studies/:id/results/ranking`
+
+See `scripts/study_testing_flow.py` for a complete runnable example.
+
+## Direct Generation
+
+Most partners should use managed batches. Trusted integrations that need lower-level control can use:
+
+- `POST /api/generations/static` to create a static planning run
+- `POST /api/generations/static/:id/render` to render selected static concepts
+- `POST /api/generations/video` for direct video runs
+- `POST /api/generations/video/plans` and related plan routes for plan-based video generation
+
+Use `references/api_reference.md` for exact request and response schemas.
+
+## Endpoint Quick Reference
+
+| Area | Method | Endpoint | Purpose |
+|---|---:|---|---|
+| Auth | `POST` | `/api/users/me/api-key` | Generate a user API key from an authenticated web session |
+| Products | `GET` | `/api/products` | List org products |
+| Products | `POST` | `/api/products` | Create a product |
+| Products | `GET` | `/api/products/:id` | Fetch a product |
+| Products | `PUT` | `/api/products/:id` | Update a product |
+| Products | `DELETE` | `/api/products/:id` | Delete a product |
+| Products | `POST` | `/api/products/extract-basics` | Extract product suggestions from a URL |
+| Products | `POST` | `/api/products/:id/brand-imports` | Start a brand import |
+| Products | `GET` | `/api/products/:id/brand-imports/:importId` | Poll a brand import |
+| Products | `POST` | `/api/products/:id/brand-imports/:importId/apply` | Apply brand import suggestions |
+| Managed batches | `POST` | `/api/v1/managed-batches` | Create an idempotent managed batch |
+| Managed batches | `GET` | `/api/v1/managed-batches/:batchId` | Poll managed batch status |
+| Managed batches | `GET` | `/api/v1/managed-batches` | List managed batches |
+| Static generation | `GET` | `/api/generations/static` | List static runs |
+| Static generation | `POST` | `/api/generations/static` | Create a static planning run |
+| Static generation | `GET` | `/api/generations/static/:id` | Fetch a static run |
+| Static generation | `GET` | `/api/generations/static/:id/events` | Stream static run progress |
+| Static generation | `PATCH` | `/api/generations/static/:id/concepts/:conceptId` | Edit a concept |
+| Static generation | `POST` | `/api/generations/static/:id/render` | Render selected static concepts |
+| Video generation | `GET` | `/api/generations/video/options` | Get supported video options |
+| Video generation | `GET` | `/api/generations/video` | List video runs |
+| Video generation | `POST` | `/api/generations/video` | Create a video run |
+| Video generation | `GET` | `/api/generations/video/:id` | Fetch a video run |
+| Video generation | `DELETE` | `/api/generations/video/:id` | Cancel or delete a video run |
+| Video generation | `GET` | `/api/generations/video/:id/events` | Stream video run progress |
+| Video generation | `POST` | `/api/generations/video/:id/export` | Export final video and create a stimulus |
+| Video plans | `GET` | `/api/generations/video/plans` | List video content plans |
+| Video plans | `POST` | `/api/generations/video/plans` | Create a video content plan |
+| Video plans | `GET` | `/api/generations/video/plans/:planId` | Fetch a video content plan |
+| Video plans | `PATCH` | `/api/generations/video/plans/:planId` | Update a video content plan |
+| Video plans | `POST` | `/api/generations/video/plans/:planId/runs` | Create a run from a plan |
+| Stimuli | `GET` | `/api/stimuli` | List stimuli |
+| Stimuli | `POST` | `/api/stimuli` | Create a stimulus from a hosted asset |
+| Stimuli | `GET` | `/api/stimuli/:id` | Fetch a stimulus |
+| Stimuli | `PUT` | `/api/stimuli/:id` | Update a stimulus |
+| Stimuli | `DELETE` | `/api/stimuli/:id` | Delete a stimulus |
+| Studies | `GET` | `/api/studies` | List studies |
+| Studies | `POST` | `/api/studies` | Create a study |
+| Studies | `GET` | `/api/studies/:id` | Fetch a study |
+| Studies | `PUT` | `/api/studies/:id` | Update a study |
+| Studies | `DELETE` | `/api/studies/:id` | Delete a study |
+| Studies | `POST` | `/api/studies/:id/stimuli` | Add stimuli to a study |
+| Studies | `DELETE` | `/api/studies/:id/stimuli/:stimulusId` | Remove a stimulus from a study |
+| Studies | `GET` | `/api/studies/:id/sampling/confirm` | Get sampling cost confirmation |
+| Studies | `POST` | `/api/studies/:id/sampling/start` | Start sampling |
+| Studies | `GET` | `/api/studies/:id/sampling/status` | Poll sampling status |
+| Studies | `GET` | `/api/studies/:id/sampling/events` | Stream sampling progress |
+| Studies | `GET` | `/api/studies/:id/results/ranking` | Get ranked stimuli |
+| Studies | `GET` | `/api/studies/:id/results/themes` | Get reason themes |
+| Studies | `GET` | `/api/studies/:id/results/demos` | Get demographic insights |
+| Studies | `GET` | `/api/studies/:id/results/geo` | Get geographic insights |
+| Studies | `GET` | `/api/studies/:id/results/segments` | Get behavioral segments |
+| Uploads | `POST` | `/api/uploads/sign` | Create a signed upload URL |
+| Billing | `GET` | `/api/billing/subscription` | Get current subscription and credits |
+| Billing | `GET` | `/api/billing/transactions` | List credit transactions |
+| Billing | `POST` | `/api/billing/checkout` | Create a Stripe checkout session |
+| Billing | `POST` | `/api/billing/addon` | Buy add-on credits |
+| Billing | `POST` | `/api/billing/portal` | Open the Stripe billing portal |
+| Health | `GET` | `/health` | Health check |
+
+## Uploads
+
+If you need to upload files rather than provide hosted URLs:
+
+1. `POST /api/uploads/sign` with `{ "fileName": "...", "contentType": "..." }`
+2. Upload the file binary to the returned `uploadUrl`
+3. Use `publicUrl` as `mediaUrl` when creating a stimulus or product branding asset
+
+The TypeScript template includes an `uploads.uploadFile()` helper.
+
+## Webhooks
+
+Study completion webhooks are supported for studies created with `callbackUrl` and `callbackSecret`. Nelos signs payloads with `X-Nelos-Signature`.
+
+Managed batches accept callback fields, but polling `GET /api/v1/managed-batches/:batchId` is the supported completion path during early access.
+
+## Full Endpoint Reference
 
 For complete schemas, enums, and field-level validation rules, load `references/api_reference.md`.
-
-Quick summary of available route groups:
-- `/api/products` — CRUD + brand imports
-- `/api/generate` — Ad concepts, renders, product branding
-- `/api/stimuli` — CRUD
-- `/api/studies` — CRUD, sampling, results, chat
-- `/api/personas` — CRUD
-- `/api/persona-groups` — CRUD, sampling, from-study
-- `/api/uploads` — Signed URL uploads
-- `/api/billing` — Subscription, transactions, Stripe checkout/portal
-- `/api/users/me` — Profile, API keys
-- `/api/orgs` — CRUD, members
-- `/health` — Health check (no auth)
