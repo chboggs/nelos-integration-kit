@@ -46,6 +46,7 @@ export type StimulusType =
 
 export interface ProductAsset {
   url?: string;
+  geminiRegisteredUrl?: string;
   objectName?: string;
   contentType?: string;
 }
@@ -54,10 +55,24 @@ export interface ProductBranding {
   logo?: ProductAsset;
   favicon?: ProductAsset;
   ogImage?: ProductAsset;
+  typographyReference?: ProductAsset;
   fontFamilies?: string[];
+  fontAssets?: Array<ProductAsset & { family?: string; weights?: string[] }>;
   colorPalette?: string[];
   notes?: string;
   referenceImages?: ProductAsset[];
+}
+
+export interface ProductServiceArea {
+  isLocal?: boolean;
+  label?: string;
+  description?: string;
+  cities?: string[];
+  counties?: string[];
+  metroAreas?: string[];
+  states?: string[];
+  countries?: string[];
+  evidence?: string[];
 }
 
 export interface Product {
@@ -69,6 +84,7 @@ export interface Product {
   isPinned?: boolean;
   features?: string[];
   branding?: ProductBranding;
+  serviceArea?: ProductServiceArea;
   createdAt: string;
   updatedAt: string;
 }
@@ -77,8 +93,20 @@ export interface ProductInput {
   name?: string;
   description?: string;
   websiteUrl?: string;
+  isPinned?: boolean;
   features?: string[];
   branding?: ProductBranding | Record<string, unknown>;
+}
+
+export interface ApplyProductBrandImportRequest {
+  logoUrl?: string | null;
+  colorPalette?: string[] | null;
+  fontFamilies?: string[] | null;
+  referenceImageUrls?: string[] | null;
+  applyFieldSuggestions?: boolean | null;
+  description?: string | null;
+  features?: string[] | null;
+  brandingNotes?: string | null;
 }
 
 export interface ManagedBatchRequest {
@@ -205,6 +233,17 @@ export interface SignedUploadResponse {
   expiresAt: string;
 }
 
+export interface TargetingGroup {
+  label?: string;
+  weight?: number;
+  ageMin?: number;
+  ageMax?: number;
+  sexes?: string[];
+  locations?: string[];
+  interests?: string[];
+  [key: string]: unknown;
+}
+
 export interface NelosClientOptions {
   apiKey: string;
   baseUrl: string;
@@ -280,8 +319,8 @@ export class NelosClient {
       ),
     getBrandImport: (id: string, importId: string) =>
       this.get<unknown>(`/api/products/${id}/brand-imports/${importId}`),
-    applyBrandImport: (id: string, importId: string, fields: Record<string, boolean>) =>
-      this.post<Product>(`/api/products/${id}/brand-imports/${importId}/apply`, { fields }),
+    applyBrandImport: (id: string, importId: string, data: ApplyProductBrandImportRequest) =>
+      this.post<Product>(`/api/products/${id}/brand-imports/${importId}/apply`, data),
   };
 
   managedBatches = {
@@ -351,22 +390,61 @@ export class NelosClient {
       videoMode?: VideoMode;
       creativeBrief?: string;
       queuePlanning?: boolean;
+      stylePreset?: string;
+      audioMode?: string;
+      voiceover?: Record<string, unknown>;
     }) => this.post<unknown>("/api/generations/video", data),
     get: (id: string) => this.get<unknown>(`/api/generations/video/${id}`),
     delete: (id: string) => this.del<unknown>(`/api/generations/video/${id}`),
     eventsUrl: (id: string) => `${this.baseUrl}/api/generations/video/${id}/events`,
+    queuePlanning: (id: string, data?: Record<string, unknown>) =>
+      this.post<unknown>(`/api/generations/video/${id}/plan`, data ?? {}),
     updatePlanning: (id: string, data: Record<string, unknown>) =>
       this.patch<unknown>(`/api/generations/video/${id}/planning`, data),
     generateScript: (id: string, data?: Record<string, unknown>) =>
       this.post<unknown>(`/api/generations/video/${id}/script/generate`, data ?? {}),
     updateScript: (id: string, data: Record<string, unknown>) =>
       this.patch<unknown>(`/api/generations/video/${id}/script`, data),
+    critiqueScript: (id: string, data?: Record<string, unknown>) =>
+      this.post<unknown>(`/api/generations/video/${id}/script/critique`, data ?? {}),
+    reviseScript: (id: string, data?: Record<string, unknown>) =>
+      this.post<unknown>(`/api/generations/video/${id}/script/revise`, data ?? {}),
     generateStoryboard: (id: string, data?: Record<string, unknown>) =>
       this.post<unknown>(`/api/generations/video/${id}/storyboard/generate`, data ?? {}),
+    updateStoryboard: (id: string, data: Record<string, unknown>) =>
+      this.patch<unknown>(`/api/generations/video/${id}/storyboard`, data),
+    generateVisualBible: (id: string, data?: Record<string, unknown>) =>
+      this.post<unknown>(`/api/generations/video/${id}/visual-bible/generate`, data ?? {}),
+    suggestVoiceover: (id: string, data?: Record<string, unknown>) =>
+      this.post<unknown>(`/api/generations/video/${id}/voiceover/suggest`, data ?? {}),
+    updateVoiceoverSettings: (id: string, data: Record<string, unknown>) =>
+      this.patch<unknown>(`/api/generations/video/${id}/voiceover/settings`, data),
     generateVoiceover: (id: string, data?: Record<string, unknown>) =>
       this.post<unknown>(`/api/generations/video/${id}/voiceover/generate`, data ?? {}),
+    addFramePlan: (id: string, data: Record<string, unknown>) =>
+      this.post<unknown>(`/api/generations/video/${id}/frame-plans`, data),
+    updateFramePlan: (id: string, frameId: string, data: Record<string, unknown>) =>
+      this.patch<unknown>(`/api/generations/video/${id}/frame-plans/${frameId}`, data),
+    generateFrame: (id: string, frameId: string, data?: Record<string, unknown>) =>
+      this.post<unknown>(
+        `/api/generations/video/${id}/frame-plans/${frameId}/assets/frame`,
+        data ?? {}
+      ),
+    addClipPlan: (id: string, data: Record<string, unknown>) =>
+      this.post<unknown>(`/api/generations/video/${id}/clip-plans`, data),
+    updateClipPlan: (id: string, clipId: string, data: Record<string, unknown>) =>
+      this.patch<unknown>(`/api/generations/video/${id}/clip-plans/${clipId}`, data),
+    generateClip: (id: string, clipId: string, data?: Record<string, unknown>) =>
+      this.post<unknown>(
+        `/api/generations/video/${id}/clip-plans/${clipId}/assets/clip`,
+        data ?? {}
+      ),
     queueAssets: (id: string, data?: Record<string, unknown>) =>
       this.post<unknown>(`/api/generations/video/${id}/assets`, data ?? {}),
+    queueFrameAssets: (id: string, data?: Record<string, unknown>) =>
+      this.post<unknown>(`/api/generations/video/${id}/assets/frames`, data ?? {}),
+    queueAssetType: (id: string, assetType: string, data?: Record<string, unknown>) =>
+      this.post<unknown>(`/api/generations/video/${id}/assets/${assetType}`, data ?? {}),
     export: (id: string, data?: Record<string, unknown>) =>
       this.post<unknown>(`/api/generations/video/${id}/export`, data ?? {}),
     plans: {
@@ -376,6 +454,16 @@ export class NelosClient {
       get: (planId: string) => this.get<unknown>(`/api/generations/video/plans/${planId}`),
       update: (planId: string, data: Record<string, unknown>) =>
         this.patch<unknown>(`/api/generations/video/plans/${planId}`, data),
+      updateConcept: (planId: string, conceptId: string, data: Record<string, unknown>) =>
+        this.patch<unknown>(
+          `/api/generations/video/plans/${planId}/concepts/${conceptId}`,
+          data
+        ),
+      generateConcepts: (planId: string, data?: Record<string, unknown>) =>
+        this.post<unknown>(
+          `/api/generations/video/plans/${planId}/concepts/generate`,
+          data ?? {}
+        ),
       createRun: (planId: string, data: Record<string, unknown>) =>
         this.post<unknown>(`/api/generations/video/plans/${planId}/runs`, data),
     },
@@ -429,10 +517,25 @@ export class NelosClient {
       ),
     removeStimulus: (id: string, stimulusId: string) =>
       this.del<{ message: string }>(`/api/studies/${id}/stimuli/${stimulusId}`),
+    addGeneratedStimuli: (id: string, stimulusIds: string[]) =>
+      this.post<{ study: Study; attachedStimuli: Stimulus[] }>(
+        `/api/studies/${id}/generated-stimuli`,
+        { stimulusIds }
+      ),
+    removeGeneratedStimulus: (id: string, stimulusId: string) =>
+      this.del<{ message: string }>(`/api/studies/${id}/generated-stimuli/${stimulusId}`),
     getSamplingConfirmation: (id: string) =>
       this.get<Record<string, unknown>>(`/api/studies/${id}/sampling/confirm`),
     startSampling: (id: string, confirmation: Record<string, unknown>) =>
       this.post(`/api/studies/${id}/sampling/start`, { confirm: confirmation }),
+    runTargetedSampling: (id: string, data: {
+      ageMin?: number;
+      ageMax?: number;
+      sexes?: string[];
+      runsPerPersonaPerStimulus?: number;
+      groups?: TargetingGroup[];
+      [key: string]: unknown;
+    }) => this.post<unknown>(`/api/studies/${id}/sampling/targeted`, data),
     getSamplingStatus: (id: string) =>
       this.get<SamplingStatus>(`/api/studies/${id}/sampling/status`),
     eventsUrl: (id: string) => `${this.baseUrl}/api/studies/${id}/sampling/events`,
@@ -456,6 +559,8 @@ export class NelosClient {
     getDemoResults: (id: string) => this.get<unknown>(`/api/studies/${id}/results/demos`),
     getSegmentResults: (id: string) => this.get<unknown>(`/api/studies/${id}/results/segments`),
     getGeoResults: (id: string) => this.get<unknown>(`/api/studies/${id}/results/geo`),
+    samples: (id: string, params?: { stimulusId?: string; limit?: number; offset?: number }) =>
+      this.get<unknown>(`/api/studies/${id}/samples${this.query(params)}`),
   };
 
   uploads = {
@@ -470,15 +575,8 @@ export class NelosClient {
       });
       return publicUrl;
     },
-  };
-
-  billing = {
-    subscription: () => this.get<unknown>("/api/billing/subscription"),
-    transactions: (params?: { page?: number; limit?: number }) =>
-      this.get<unknown>(`/api/billing/transactions${this.query(params)}`),
-    checkout: (plan: "starter" | "pro") => this.post<unknown>("/api/billing/checkout", { plan }),
-    addon: (data: Record<string, unknown>) => this.post<unknown>("/api/billing/addon", data),
-    portal: () => this.post<unknown>("/api/billing/portal", {}),
+    deleteObject: (objectName: string) =>
+      this.request<unknown>("DELETE", "/api/uploads/object", { objectName }),
   };
 
   health = () => this.get<{ status: string; timestamp: string; uptime: number }>("/health");

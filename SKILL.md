@@ -1,13 +1,13 @@
 ---
 name: nelos-api-integration
-description: Complete guide to integrating with the Nelos External API. Use this skill when a user wants to build a partner integration, create managed asset batches, poll generated ads, run optional study testing, upload stimuli, inspect billing, or implement API-key authentication.
+description: Complete guide to integrating with the Nelos External API. Use this skill when a user wants to build a partner integration, create managed asset batches, poll generated ads, use direct static/video generation, run optional study testing, upload stimuli, or implement API-key authentication.
 ---
 
 # Nelos API Integration Guide
 
 ## Purpose
 
-This skill provides instructions for integrating partner applications or external scripts with the Nelos External API. It covers API-key authentication, product setup, managed asset batches, optional direct static/video generation, study testing, uploads, webhooks, and billing visibility.
+This skill provides instructions for integrating partner applications or external scripts with the Nelos External API. It covers API-key authentication, product setup, managed asset batches, direct static/video generation, study testing, uploads, and webhooks.
 
 Use this skill when:
 
@@ -16,6 +16,7 @@ Use this skill when:
 - You need to run study testing against generated or uploaded assets
 - You are implementing the Nelos API-key authentication flow
 - You need exact external endpoint names, schemas, or status semantics
+- Do not use this skill for internal account-management or commercial-operations APIs; those are intentionally omitted from the external spec.
 
 ## Bundled Resources
 
@@ -39,14 +40,15 @@ Create or reference Product -> Submit Managed Batch -> Poll Batch -> Store retur
 Important constraints:
 
 - **Org membership:** API keys are tied to a Nelos user in an org. Most authenticated routes require org membership.
-- **Partner customer mapping:** Nelos billing is org-wise. Keep downstream customers, permissions, and end-customer billing in the partner app.
+- **Partner customer mapping:** Keep downstream customers, permissions, and end-customer commercial logic in the partner app.
+- **Commercial operations:** Nelos commercial terms, credits, and account setup are handled outside this external API.
 - **External reconciliation:** Pass stable `externalCustomerId`, `externalWorkspaceId`, and `externalCampaignId` values when creating managed batches.
 - **Idempotency:** Send `Idempotency-Key` on managed batch creates. Retrying the same key for the same org returns the existing batch.
 - **Early-access managed batches:** Polling is the supported status path. Callback delivery for managed batches may be coordinated operationally during early access.
 - **Managed-service rate:** Managed batch credit estimates include the current 20% managed-service markup.
 - **Pipeline types:** Use `ctrProxy` for static/image ads, `videoCtrProxy` for video ads, `ama` for open-ended AMA feedback, and `textHook` for text hooks.
 - **Mixed media:** Do not mix image, video, AMA, and text-hook stimuli in the same study.
-- **Billing enforcement:** Insufficient credits or blocked subscription status returns `402`.
+- **Credit/subscription enforcement:** Insufficient credits or blocked account status returns `402`; do not infer external billing-management endpoints from this.
 
 ## Authentication
 
@@ -165,11 +167,34 @@ Use `references/api_reference.md` for exact request and response schemas.
 | Video generation | `GET` | `/api/generations/video/:id` | Fetch a video run |
 | Video generation | `DELETE` | `/api/generations/video/:id` | Cancel or delete a video run |
 | Video generation | `GET` | `/api/generations/video/:id/events` | Stream video run progress |
+| Video generation | `POST` | `/api/generations/video/:id/plan` | Queue planning |
+| Video generation | `PATCH` | `/api/generations/video/:id/planning` | Update planning |
+| Video generation | `POST` | `/api/generations/video/:id/script/generate` | Generate script |
+| Video generation | `PATCH` | `/api/generations/video/:id/script` | Update script |
+| Video generation | `POST` | `/api/generations/video/:id/script/critique` | Critique script |
+| Video generation | `POST` | `/api/generations/video/:id/script/revise` | Revise script |
+| Video generation | `POST` | `/api/generations/video/:id/storyboard/generate` | Generate storyboard |
+| Video generation | `PATCH` | `/api/generations/video/:id/storyboard` | Edit storyboard |
+| Video generation | `POST` | `/api/generations/video/:id/visual-bible/generate` | Generate visual bible |
+| Video generation | `POST` | `/api/generations/video/:id/voiceover/suggest` | Suggest voiceover settings |
+| Video generation | `PATCH` | `/api/generations/video/:id/voiceover/settings` | Update voiceover settings |
+| Video generation | `POST` | `/api/generations/video/:id/voiceover/generate` | Generate voiceover |
+| Video generation | `POST` | `/api/generations/video/:id/frame-plans` | Add a frame plan |
+| Video generation | `PATCH` | `/api/generations/video/:id/frame-plans/:frameId` | Update a frame plan |
+| Video generation | `POST` | `/api/generations/video/:id/frame-plans/:frameId/assets/frame` | Generate a frame |
+| Video generation | `POST` | `/api/generations/video/:id/clip-plans` | Add a clip plan |
+| Video generation | `PATCH` | `/api/generations/video/:id/clip-plans/:clipId` | Update a clip plan |
+| Video generation | `POST` | `/api/generations/video/:id/clip-plans/:clipId/assets/clip` | Generate a clip |
+| Video generation | `POST` | `/api/generations/video/:id/assets` | Queue remaining assets |
+| Video generation | `POST` | `/api/generations/video/:id/assets/frames` | Queue all frame assets |
+| Video generation | `POST` | `/api/generations/video/:id/assets/:assetType` | Queue one asset type |
 | Video generation | `POST` | `/api/generations/video/:id/export` | Export final video and create a stimulus |
 | Video plans | `GET` | `/api/generations/video/plans` | List video content plans |
 | Video plans | `POST` | `/api/generations/video/plans` | Create a video content plan |
 | Video plans | `GET` | `/api/generations/video/plans/:planId` | Fetch a video content plan |
 | Video plans | `PATCH` | `/api/generations/video/plans/:planId` | Update a video content plan |
+| Video plans | `PATCH` | `/api/generations/video/plans/:planId/concepts/:conceptId` | Update a plan concept |
+| Video plans | `POST` | `/api/generations/video/plans/:planId/concepts/generate` | Generate more plan concepts |
 | Video plans | `POST` | `/api/generations/video/plans/:planId/runs` | Create a run from a plan |
 | Stimuli | `GET` | `/api/stimuli` | List stimuli |
 | Stimuli | `POST` | `/api/stimuli` | Create a stimulus from a hosted asset |
@@ -183,8 +208,11 @@ Use `references/api_reference.md` for exact request and response schemas.
 | Studies | `DELETE` | `/api/studies/:id` | Delete a study |
 | Studies | `POST` | `/api/studies/:id/stimuli` | Add stimuli to a study |
 | Studies | `DELETE` | `/api/studies/:id/stimuli/:stimulusId` | Remove a stimulus from a study |
+| Studies | `POST` | `/api/studies/:id/generated-stimuli` | Add generated stimuli to a study |
+| Studies | `DELETE` | `/api/studies/:id/generated-stimuli/:stimulusId` | Remove generated stimulus from a study |
 | Studies | `GET` | `/api/studies/:id/sampling/confirm` | Get sampling cost confirmation |
 | Studies | `POST` | `/api/studies/:id/sampling/start` | Start sampling |
+| Studies | `POST` | `/api/studies/:id/sampling/targeted` | Run targeted sampling |
 | Studies | `GET` | `/api/studies/:id/sampling/status` | Poll sampling status |
 | Studies | `GET` | `/api/studies/:id/sampling/events` | Stream sampling progress |
 | Studies | `GET` | `/api/studies/:id/results/ranking` | Get ranked stimuli |
@@ -192,12 +220,9 @@ Use `references/api_reference.md` for exact request and response schemas.
 | Studies | `GET` | `/api/studies/:id/results/demos` | Get demographic insights |
 | Studies | `GET` | `/api/studies/:id/results/geo` | Get geographic insights |
 | Studies | `GET` | `/api/studies/:id/results/segments` | Get behavioral segments |
+| Studies | `GET` | `/api/studies/:id/samples` | List study samples |
 | Uploads | `POST` | `/api/uploads/sign` | Create a signed upload URL |
-| Billing | `GET` | `/api/billing/subscription` | Get current subscription and credits |
-| Billing | `GET` | `/api/billing/transactions` | List credit transactions |
-| Billing | `POST` | `/api/billing/checkout` | Create a Stripe checkout session |
-| Billing | `POST` | `/api/billing/addon` | Buy add-on credits |
-| Billing | `POST` | `/api/billing/portal` | Open the Stripe billing portal |
+| Uploads | `DELETE` | `/api/uploads/object` | Delete an uploaded object owned by the org |
 | Health | `GET` | `/health` | Health check |
 
 ## Uploads
